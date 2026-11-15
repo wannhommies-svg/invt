@@ -265,8 +265,7 @@ async def button_handler(update: Update, ctx):
             f"🔑 *Enter Withdrawal PIN*\n\n"
             f"🆔 Request: `{r['reqadmin_id']}`\n💰 Amount: `${r['amount']:,.2f}`\n"
             f"💳 Payout: {PA")YOUT_METHODS.get(r['method'])} → `{r['account']}`\n\n"
-            f"Send the 6-digit])
- PIN from the admin.\n_(Or /cancel)_",
+f"Send the 6-digit PIN from the admin.\n_(Or /cancel)_",
             parse_mode="Markdown")
         return W_WD_P       IN
 
