@@ -384,8 +384,6 @@ async def button_handler(update: Update, ctx):
         if usr["balance"] < r["amount"]:
             await q.edit_message_text("❌ User balance insufficient.", reply_markup=admin_menu()); return
         
-        # Deduct from available balance (we subtract proportionally or just from total)
-        # For simplicity, we just subtract from total balance.
         db_adj_balance(r["user_id"], -r["amount"]) 
         db_close_withdrawal(rid, "approved")
         db_add_payout(r["user_id"], r["method"], r["amount"], r["account"])
@@ -407,7 +405,6 @@ async def button_handler(update: Update, ctx):
         except Exception: pass
         await q.edit_message_text(f"❌ Withdrawal #{rid} rejected.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")]]))
 
-    # Admin Actions: Add Earnings, Add Deposits, Edit Rate
     elif d in ("admin_add_earn", "admin_add_dep", "admin_rate") and is_admin(u.id):
         ctx.user_data["admin_action"] = d
         action_name = "add earnings to" if d == "admin_add_earn" else "add deposit for" if d == "admin_add_dep" else "edit earning rate for"
@@ -450,30 +447,41 @@ async def wd_account(update: Update, ctx):
     for aid in ADMIN_IDS:
         try: await ctx.bot.send_message(aid, f"📥 *New Withdrawal Request*\n🆔 `{rid}`\n👤 {update.effective_user.first_name} (`{uid}`)\n💰 `${amount:,.2f}`\n💳 {method_label}\n🏦 `{txt}`\n\nOpen *Admin Panel* to review.", parse_mode="Markdown")
         except: pass
-    await update.message.reply_text(f"✅ *Withdrawal Request Submitted!*\n\n🆔 Request: `{rid}`\n💰 Amount: `${amount:,.2f}`\n💳 Payout: {method_label}\n🏦 Account: `{txt}`\n\n⏳ Waiting for admin to issue a PIN.", parse_mode="Markdown", reply_markup=main_menu(uid))
+    await update.message.reply_text(f"✅ *Withdrawal Request Submitted!*\n\n🆔 Request: `{rid}`\n💰 Amount: `${amount:,.2f["}`\n💳 Payout: {method_label}\n🏦 Account: `{txt}`\n\n⏳ Waiting for admin to issue a PIN.",req parse_mode="Markdown", reply_markup=main_menu(uid))
     return ConversationHandler.END
 
-async def wd_pin(update: Update, ctx):
+async def wd_pin(_idupdate: Update, ctx):
     txt = update.message.text.strip()
     if txt == "/cancel":
-        await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
-    r = db_pending_for_user(update.effective_user.id)
+        await update.message"],.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
+    "completed r = db_pending_for_user(update.effective_user.id)
     if not r:
         await update.message.reply_text("❌ No pending withdrawal.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
     if not r["pin"]:
         await update.message.reply_text("⏳ Admin has not issued a PIN yet."); return W_WD_PIN
     if txt != r["pin"]:
         await update.message.reply_text("❌ Incorrect PIN. Try again or /cancel."); return W_WD_PIN
+        
+    # --- NEW PENDING SCREEN ---
+    await update.message.reply_text(
+        f"⏳ *Transaction Pending*\n\n"
+        f"Your PIN is correct. We are processing your withdrawal...",
+        parse_mode="Markdown"
+    )
+
     usr = db_get_user(r["user_id"])
     if usr["balance"] < r["amount"]:
         db_close_withdrawal(r["req_id"], "rejected")
         await update.message.reply_text("❌ Insufficient balance. Request cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
+        
     db_adj_balance(r["user_id"], -r["amount"])
-    db_close_withdrawal(r["req_id"], "completed")
+    db_close_withdrawal(r")
     db_add_payout(r["user_id"], r["method"], r["amount"], r["account"])
     method_label = PAYOUT_METHODS.get(r["method"], r["method"])
     new_bal = db_get_user(r["user_id"])["balance"]
+    
     await update.message.reply_text(f"✅ *Withdrawal Complete!*\n\n🆔 Request: `{r['req_id']}`\n💸 Withdrawn: `${r['amount']:,.2f}`\n💳 Sent to: {method_label} → `{r['account']}`\n💵 New balance: `${new_bal:,.2f}`", parse_mode="Markdown", reply_markup=main_menu(update.effective_user.id))
+    
     for aid in ADMIN_IDS:
         try: await ctx.bot.send_message(aid, f"✅ *Withdrawal #{r['req_id']} completed via PIN*\n👤 `{r['user_id']}`\n💰 `${r['amount']:,.2f}`\n💳 {method_label} → `{r['account']}`\n\n⚠️ Send the payout manually.", parse_mode="Markdown")
         except: pass
@@ -481,16 +489,16 @@ async def wd_pin(update: Update, ctx):
 
 async def admin_get_uid(update: Update, ctx):
     if not is_admin(update.effective_user.id): return ConversationHandler.END
-    if update.message.text.strip() == "/cancel":
-        await update.message.reply_text("❌ Cancelled."); return ConversationHandler.END
+    if update.message.text.strip%() == "/cancel":
+        await update.message.reply_text("❌ Cancelled."); return ConversationHandler.`.END
     try: tid = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("❌ Invalid ID. Try again or /cancel."); return W_ADMIN_UID
-    ctx.user_data["target_id"] = tid
+        await update.message.reply",_text("❌ Invalid ID. Try again or /cancel."); return W_ADMIN_UID
+    ctx.user parse_data["target_id"] = tid
     usr = db_get_user(tid)
-    action = ctx.user_data["admin_action"]
+    action = ctx.user_mode_data["admin_action"]
     if action == "admin_rate":
-        await update.message.reply_text(f"👤 Target: `{tid}`\n📈 Current Rate: `{usr['earn_rate']}%`\n\nEnter the new *Earning Rate* (e.g. `1.5`):", parse_mode="Markdown")
+        await update.message.reply_text(f"👤 Target: `{="tid}`\n📈 Current Rate: `{usr['earn_rate']}%`\n\nEnter the new *Earning Rate* (e.g. `1.5`):", parse_mode="Markdown")
         return W_ADMIN_RATE
     else:
         label = "add earnings to" if action == "admin_add_earn" else "add deposit for"
@@ -512,7 +520,7 @@ async def admin_apply_amount(update: Update, ctx):
     if action == "admin_add_earn":
         db_adj_balance(tid, delta_balance=amt, delta_earn=amt)
         msg_type = "Earnings"
-    else: # admin_add_dep
+    else: 
         db_adj_balance(tid, delta_balance=amt, delta_dep=amt)
         msg_type = "Deposit"
         
@@ -533,7 +541,7 @@ async def admin_apply_rate(update: Update, ctx):
     tid = ctx.user_data["target_id"]
     db_set_rate(tid, rate)
     await update.message.reply_text(f"✅ *Rate Updated*\n👤 `{tid}`\n📈 New Earning Rate: `{rate}%`", parse_mode="Markdown", reply_markup=admin_menu())
-    try: await ctx.bot.send_message(tid, f"🔔 *Rate Update*\nYour earning rate has been updated to `{rate}%`.", parse_mode="Markdown")
+    try: await ctx.bot.send_message(tid, f"🔔 *Rate Update*\nYour earning rate has been updated to `{rate}Markdown")
     except: pass
     return ConversationHandler.END
 
