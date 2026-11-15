@@ -14,11 +14,11 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "123456789").split(",")]
 DB_PATH = os.environ.get("DB_PATH", "data.db")
 
-# States
+# Conversation States
 (
-    W_ADMIN_UID, W_ADMIN_AMOUNT,
+    W_ADMIN_UID, W_ADMIN_AMOUNT, W_ADMIN_RATE,
     W_WD_AMOUNT, W_WD_ACCOUNT, W_WD_PIN,
-) = range(5)
+) = range(6)
 
 logging.basicConfig(format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,15 +31,11 @@ PAYOUT_METHODS = {
     "other":   "📦 Other",
 }
 
-
 # ==================== DATABASE LAYER ====================
 def db_connect():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
     return conn
-
 
 def db_init():
     with db_connect() as conn:
@@ -48,18 +44,8 @@ def db_init():
             user_id     INTEGER PRIMARY KEY,
             username    TEXT,
             balance     REAL DEFAULT 0,
-            total_pnl   REAL DEFAULT 0,
+            earn_rate   REAL DEFAULT 0,
             joined      TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS trades (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id     INTEGER NOT NULL,
-            pair        TEXT,
-            side        TEXT,
-            pnl         REAL,
-            created     TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(user_id)
         );
 
         CREATE TABLE IF NOT EXISTS payouts (
@@ -68,8 +54,7 @@ def db_init():
             method      TEXT,
             amount      REAL,
             account     TEXT,
-            created     TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(user_id)
+            created     TEXT
         );
 
         CREATE TABLE IF NOT EXISTS withdrawals (
@@ -81,8 +66,7 @@ def db_init():
             pin         TEXT,
             status      TEXT DEFAULT 'pending',
             created     TEXT,
-            decided     TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(user_id)
+            decided     TEXT
         );
 
         CREATE TABLE IF NOT EXISTS meta (
@@ -90,19 +74,17 @@ def db_init():
             value       TEXT
         );
         """)
-        # Seed request counter
         row = conn.execute("SELECT value FROM meta WHERE key='req_counter'").fetchone()
         if not row:
             conn.execute("INSERT INTO meta(key,value) VALUES('req_counter','1000')")
         conn.commit()
-
 
 def db_get_user(uid: int, username: str = None) -> dict:
     with db_connect() as conn:
         row = conn.execute("SELECT * FROM users WHERE user_id=?", (uid,)).fetchone()
         if not row:
             conn.execute(
-                "INSERT INTO users(user_id, username, balance, total_pnl, joined) VALUES(?,?,0,0,?)",
+                "INSERT INTO users(user_id, username, balance, earn_rate, joined) VALUES(?,?,0,0,?)",
                 (uid, username or f"User{uid}", datetime.now().strftime("%Y-%m-%d"))
             )
             conn.commit()
@@ -112,43 +94,20 @@ def db_get_user(uid: int, username: str = None) -> dict:
             conn.commit()
         return dict(row)
 
-
-def db_set_balance(uid: int, new_balance: float):
-    with db_connect() as conn:
-        conn.execute("UPDATE users SET balance=? WHERE user_id=?", (new_balance, uid))
-        conn.commit()
-
-
 def db_adj_balance(uid: int, delta: float):
     with db_connect() as conn:
         conn.execute("UPDATE users SET balance = balance + ? WHERE user_id=?", (delta, uid))
         conn.commit()
 
+def db_set_rate(uid: int, rate: float):
+    with db_connect() as conn:
+        conn.execute("UPDATE users SET earn_rate=? WHERE user_id=?", (rate, uid))
+        conn.commit()
 
 def db_list_users() -> list:
     with db_connect() as conn:
         rows = conn.execute("SELECT * FROM users ORDER BY joined DESC").fetchall()
         return [dict(r) for r in rows]
-
-
-def db_get_trades(uid: int, limit: int = 10) -> list:
-    with db_connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM trades WHERE user_id=? ORDER BY id DESC LIMIT ?",
-            (uid, limit)
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-def db_add_trade(uid: int, pair: str, side: str, pnl: float):
-    with db_connect() as conn:
-        conn.execute(
-            "INSERT INTO trades(user_id, pair, side, pnl, created) VALUES(?,?,?,?,?)",
-            (uid, pair, side, pnl, datetime.now().strftime("%Y-%m-%d %H:%M"))
-        )
-        conn.execute("UPDATE users SET total_pnl = total_pnl + ? WHERE user_id=?", (pnl, uid))
-        conn.commit()
-
 
 def db_add_payout(uid: int, method: str, amount: float, account: str):
     with db_connect() as conn:
@@ -158,14 +117,10 @@ def db_add_payout(uid: int, method: str, amount: float, account: str):
         )
         conn.commit()
 
-
 def db_last_payout(uid: int):
     with db_connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM payouts WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM payouts WHERE user_id=? ORDER BY id DESC LIMIT 1", (uid,)).fetchone()
         return dict(row) if row else None
-
 
 def db_next_req_id() -> str:
     with db_connect() as conn:
@@ -175,84 +130,64 @@ def db_next_req_id() -> str:
         conn.commit()
         return str(n)
 
-
 def db_create_withdrawal(uid: int, amount: float, method: str, account: str) -> str:
     rid = db_next_req_id()
     with db_connect() as conn:
         conn.execute(
-            "INSERT INTO withdrawals(req_id, user_id, amount, method, account, status, created) "
-            "VALUES(?,?,?,?,?, 'pending', ?)",
+            "INSERT INTO withdrawals(req_id, user_id, amount, method, account, status, created) VALUES(?,?,?,?,?, 'pending', ?)",
             (rid, uid, amount, method, account, datetime.now().strftime("%Y-%m-%d %H:%M"))
         )
         conn.commit()
     return rid
-
 
 def db_get_withdrawal(rid: str):
     with db_connect() as conn:
         row = conn.execute("SELECT * FROM withdrawals WHERE req_id=?", (rid,)).fetchone()
         return dict(row) if row else None
 
-
 def db_pending_for_user(uid: int):
     with db_connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM withdrawals WHERE user_id=? AND status='pending' LIMIT 1", (uid,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM withdrawals WHERE user_id=? AND status='pending' LIMIT 1", (uid,)).fetchone()
         return dict(row) if row else None
-
 
 def db_pending_all() -> list:
     with db_connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM withdrawals WHERE status='pending' ORDER BY created"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM withdrawals WHERE status='pending' ORDER BY created").fetchall()
         return [dict(r) for r in rows]
-
 
 def db_set_pin(rid: str, pin: str):
     with db_connect() as conn:
         conn.execute("UPDATE withdrawals SET pin=? WHERE req_id=?", (pin, rid))
         conn.commit()
 
-
 def db_close_withdrawal(rid: str, status: str):
     with db_connect() as conn:
-        conn.execute(
-            "UPDATE withdrawals SET status=?, decided=? WHERE req_id=?",
-            (status, datetime.now().strftime("%Y-%m-%d %H:%M"), rid)
-        )
+        conn.execute("UPDATE withdrawals SET status=?, decided=? WHERE req_id=?", (status, datetime.now().strftime("%Y-%m-%d %H:%M"), rid))
         conn.commit()
 
-
-# ==================== HELPERS ====================
+# ==================== UI HELPERS ====================
 def is_admin(uid): return uid in ADMIN_IDS
-
 
 def main_menu(uid):
     kb = [
-        [InlineKeyboardButton("💰 Balance", callback_data="balance"),
-         InlineKeyboardButton("📊 Dashboard", callback_data="dashboard")],
-        [InlineKeyboardButton("💸 Withdraw", callback_data="withdraw"),
-         InlineKeyboardButton("🔑 Enter PIN", callback_data="enter_pin")],
-        [InlineKeyboardButton("📈 My Trades", callback_data="trades"),
+        [InlineKeyboardButton("💼 My Earnings", callback_data="earnings"),
+         InlineKeyboardButton("💸 Withdraw", callback_data="withdraw")],
+        [InlineKeyboardButton("🔑 Enter PIN", callback_data="enter_pin"),
          InlineKeyboardButton("🔄 Refresh", callback_data="refresh")],
     ]
     if is_admin(uid):
         kb.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin")])
     return InlineKeyboardMarkup(kb)
 
-
 def admin_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Set Balance", callback_data="admin_set")],
-        [InlineKeyboardButton("➕ Add Funds", callback_data="admin_add")],
+        [InlineKeyboardButton("➕ Add Earnings", callback_data="admin_add"),
+         InlineKeyboardButton("📈 Edit Earning Rate", callback_data="admin_rate")],
         [InlineKeyboardButton("➖ Remove Funds", callback_data="admin_remove")],
         [InlineKeyboardButton("📥 Withdrawal Requests", callback_data="admin_wd")],
         [InlineKeyboardButton("👥 List Users", callback_data="admin_list")],
         [InlineKeyboardButton("⬅️ Back", callback_data="back")],
     ])
-
 
 def method_choose_kb():
     rows, buf = [], []
@@ -264,89 +199,58 @@ def method_choose_kb():
     rows.append([InlineKeyboardButton("❌ Cancel", callback_data="pm_cancel")])
     return InlineKeyboardMarkup(rows)
 
-
 def fmt_dash(uid, name):
     u = db_get_user(uid, name)
-    trades = db_get_trades(uid, limit=9999)
-    wins = sum(1 for t in trades if t["pnl"] > 0)
-    losses = len(trades) - wins
-    wr = (wins / len(trades) * 100) if trades else 0
-    pnl_e = "🟢" if u["total_pnl"] >= 0 else "🔴"
     lp = db_last_payout(uid)
     last_payout = f"{PAYOUT_METHODS.get(lp['method'], lp['method'])} `${lp['amount']:,.2f}`" if lp else "—"
+    
     return (
-        f"📊 *DASHBOARD*\n━━━━━━━━━━━━━━━\n"
-        f"👤 *{name}*  |  🆔 `{uid}`\n"
-        f"📅 Joined: {u['joined']}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"💰 *Balance:* `${u['balance']:,.2f}`\n"
-        f"{pnl_e} *Total PnL:* `${u['total_pnl']:+,.2f}`\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"📈 Trades: `{len(trades)}`\n"
-        f"✅ Wins: `{wins}`  |  ❌ Losses: `{losses}`\n"
-        f"🎯 Win Rate: `{wr:.1f}%`\n"
-        f"💳 Last payout: {last_payout}\n"
+        f"💼 *EARNINGS DASHBOARD*\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"👤 *Name:* {name}\n"
+        f"🆔 *Account:* `{uid}`\n"
+        f"📅 *Member Since:* {u['joined']}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💰 *Available Balance:* `${u['balance']:,.2f}`\n"
+        f"📈 *Current Earning Rate:* `{u['earn_rate']}%`\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 *Last Payout:* {last_payout}\n"
     )
-
 
 def gen_pin():
     return f"{secrets.randbelow(1000000):06d}"
 
-
-# ==================== USER COMMANDS ====================
+# ==================== COMMANDS & ROUTER ====================
 async def start(update: Update, ctx):
     u = update.effective_user
     db_get_user(u.id, u.first_name)
     await update.message.reply_text(
         f"👋 Welcome *{u.first_name}*!\n\n"
-        f"Use the buttons to trade, check balance, or withdraw.\n"
-        f"💡 Withdrawals need a payout account + a PIN from the admin.",
+        f"Your professional earnings dashboard is ready.",
         parse_mode="Markdown", reply_markup=main_menu(u.id),
     )
 
-
-# ==================== CALLBACK ROUTER ====================
 async def button_handler(update: Update, ctx):
     q = update.callback_query
     await q.answer()
     u = q.from_user
     d = q.data
 
-    if d == "balance":
-        usr = db_get_user(u.id, u.first_name)
-        await q.edit_message_text(
-            f"💰 *Balance*\n\nAvailable: `${usr['balance']:,.2f}`\n"
-            f"Total PnL: `${usr['total_pnl']:+,.2f}`",
-            parse_mode="Markdown", reply_markup=main_menu(u.id))
-
-    elif d in ("dashboard", "refresh", "back"):
-        await q.edit_message_text(fmt_dash(u.id, u.first_name),
-                                  parse_mode="Markdown", reply_markup=main_menu(u.id))
-
-    elif d == "trades":
-        trades = db_get_trades(u.id, limit=10)
-        if not trades:
-            text = "📈 *No trades yet.*"
-        else:
-            lines = ["📈 *Recent Trades*\n━━━━━━━━━━━━━━━"]
-            for t in trades:
-                e = "🟢" if t["pnl"] > 0 else "🔴"
-                lines.append(f"{e} {t['pair']} | {t['side']} | `${t['pnl']:+,.2f}` | {t['created']}")
-            text = "\n".join(lines)
-        await q.edit_message_text(text, parse_mode="Markdown", reply_markup=main_menu(u.id))
+    if d in ("earnings", "refresh", "back"):
+        await q.edit_message_text(fmt_dash(u.id, u.first_name), parse_mode="Markdown", reply_markup=main_menu(u.id))
 
     elif d == "withdraw":
         r = db_pending_for_user(u.id)
         if r:
             await q.edit_message_text(
-                f"⏳ *You already have a pending withdrawal*\n\n"
+                f"⏳ *Pending Withdrawal Found*\n\n"
                 f"🆔 Request: `{r['req_id']}`\n💰 Amount: `${r['amount']:,.2f}`\n"
                 f"💳 Payout: {PAYOUT_METHODS.get(r['method'], r['method'])} → `{r['account']}`\n\n"
                 f"Tap *🔑 Enter PIN* once the admin gives it to you.",
                 parse_mode="Markdown", reply_markup=main_menu(u.id))
             return
         await q.edit_message_text(
-            "💸 *Withdraw — Step 1 of 3*\n\n"
+            "💸 *New Withdrawal*\n\n"
             "Enter the amount you want to withdraw:\n"
             "_(Send a number, e.g. `50`, or /cancel)_",
             parse_mode="Markdown")
@@ -355,21 +259,20 @@ async def button_handler(update: Update, ctx):
     elif d == "enter_pin":
         r = db_pending_for_user(u.id)
         if not r:
-            await q.edit_message_text(
-                "❌ You have no pending withdrawal.\nTap *💸 Withdraw* to start one.",
-                parse_mode="Markdown", reply_markup=main_menu(u.id))
+            await q.edit_message_text("❌ You have no pending withdrawal.", parse_mode="Markdown", reply_markup=main_menu(u.id))
             return
         await q.edit_message_text(
-            f"🔑 *Enter your withdrawal PIN*\n\n"
-            f"🆔 Request: `{r['req_id']}`\n💰 Amount: `${r['amount']:,.2f}`\n"
-            f"💳 Payout: {PAYOUT_METHODS.get(r['method'])} → `{r['account']}`\n\n"
-            f"Send the 6-digit PIN you received from the admin.\n_(Or /cancel)_",
+            f"🔑 *Enter Withdrawal PIN*\n\n"
+            f"🆔 Request: `{r['reqadmin_id']}`\n💰 Amount: `${r['amount']:,.2f}`\n"
+            f"💳 Payout: {PA")YOUT_METHODS.get(r['method'])} → `{r['account']}`\n\n"
+            f"Send the 6-digit])
+ PIN from the admin.\n_(Or /cancel)_",
             parse_mode="Markdown")
-        return W_WD_PIN
+        return W_WD_P       IN
 
     elif d.startswith("pm_"):
         if d == "pm_cancel":
-            await q.edit_message_text("❌ Withdrawal cancelled.", reply_markup=main_menu(u.id))
+            await q.edit_message_text("❌ With awaitdrawal cancelled.", reply_markup=main_menu(u.id))
             return ConversationHandler.END
         method = d.replace("pm_", "")
         ctx.user_data["wd_method"] = method
@@ -381,43 +284,36 @@ async def button_handler(update: Update, ctx):
             "other":   "Enter your payout account details",
         }
         await q.edit_message_text(
-            f"💸 *Withdraw — Step 3 of 3*\n\n"
+            f"💸 *Withdraw Details*\n\n"
             f"💳 Method: {PAYOUT_METHODS[method]}\n\n"
             f"{prompts[method]}\n\n_(Or /cancel)_",
             parse_mode="Markdown")
         return W_WD_ACCOUNT
 
     elif d == "admin" and is_admin(u.id):
-        await q.edit_message_text("⚙️ *Admin Panel*", parse_mode="Markdown", reply_markup=admin_menu())
+        await q.edit_message_text("⚙️ *Admin Panel*\nChoose an action:", parse_mode="Markdown", reply_markup=admin_menu())
 
     elif d == "admin_list" and is_admin(u.id):
         users = db_list_users()
         if not users:
             text = "👥 No users yet."
         else:
-            lines = ["👥 *All Users*\n━━━━━━━━━━━━━━━"]
+            lines = ["👥 *All Users*\n━━━━━━━━━━━━━━━━━━━━"]
             for i in users:
-                lines.append(f"🆔 `{i['user_id']}` — {i['username']}\n   💰 ${i['balance']:,.2f}")
+                lines.append(f"🆔 `{i['user_id']}` — {i['username']}\n   💰 `${i['balance']:,.2f}` | 📈 `{i['earn_rate']}%`")
             text = "\n".join(lines)
         await q.edit_message_text(text, parse_mode="Markdown", reply_markup=admin_menu())
 
     elif d == "admin_wd" and is_admin(u.id):
         pending = db_pending_all()
         if not pending:
-            await q.edit_message_text("📥 *No pending withdrawals.*",
-                                      parse_mode="Markdown", reply_markup=admin_menu())
+            await q.edit_message_text("📥 *No pending withdrawals.*", parse_mode="Markdown", reply_markup=admin_menu())
             return
         rows = []
         for r in pending:
             m = PAYOUT_METHODS.get(r["method"], r["method"]).split(" ", 1)[-1]
-            rows.append([InlineKeyboardButton(
-                f"#{r['req_id']} — {m} — ${r['amount']:,.2f}",
-                callback_data=f"wd_view_{r['req_id']}")])
-        rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin")])
-        await q.edit_message_text(
-            f"📥 *Pending Withdrawal Requests* ({len(pending)})\n"
-            f"Tap one to review payout + issue PIN:",
-            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+            rows.append([InlineKeyboardButton(f"#{r['req_id']} — {m} — ${r['amount']:,.2f}", callback_data=f"wd_view_{r['req_id']}")])
+        rows.append([InlineKeyboardButton("⬅️ Back", callback_data=" q.edit_message_text(f"📥 *Pending Withdrawals* ({len(pending)})\nTap one to review:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
 
     elif d.startswith("wd_view_") and is_admin(u.id):
         rid = d.replace("wd_view_", "")
@@ -428,21 +324,20 @@ async def button_handler(update: Update, ctx):
         pin_display = r["pin"] if r["pin"] else "_not yet generated_"
         method_label = PAYOUT_METHODS.get(r["method"], r["method"])
         await q.edit_message_text(
-            f"📥 *Withdrawal #{rid}*\n"
-            f"━━━━━━━━━━━━━━━\n"
+            f"📥 *Withdrawal #{rid}*\n━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 User: {usr['username']} (`{r['user_id']}`)\n"
             f"💰 Amount: `${r['amount']:,.2f}`\n"
             f"📊 Balance: `${usr['balance']:,.2f}`\n"
             f"🕐 Created: {r['created']}\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"💳 *Payout Method:* {method_label}\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💳 *Method:* {method_label}\n"
             f"🏦 *Account:* `{r['account']}`\n"
-            f"━━━━━━━━━━━━━━━\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
             f"🔑 PIN: `{pin_display}`\n",
             parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔑 Generate & Send PIN", callback_data=f"wd_pin_{rid}")],
-                [InlineKeyboardButton("✅ Force Approve (no PIN)", callback_data=f"wd_approve_{rid}")],
+                [InlineKeyboardButton("✅ Force Approve", callback_data=f"wd_approve_{rid}")],
                 [InlineKeyboardButton("❌ Reject", callback_data=f"wd_reject_{rid}")],
                 [InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")],
             ]))
@@ -466,15 +361,10 @@ async def button_handler(update: Update, ctx):
                 f"Tap *🔑 Enter PIN* in the bot to complete.",
                 parse_mode="Markdown")
         except Exception as e:
-            logger.warning(f"DM failed for {r['user_id']}: {e}")
+            logger.warning(f"DM failed: {e}")
         await q.edit_message_text(
-            f"✅ PIN generated and sent to `{r['user_id']}`.\n\n"
-            f"🔑 PIN: `{r['pin']}`\n"
-            f"💳 Payout: {method_label} → `{r['account']}`\n\n"
-            f"_(Share manually if the user blocked the bot.)_",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Back", callback_data=f"wd_view_{rid}")]]))
+            f"✅ PIN generated and sent to `{r['user_id']}`.\n\n🔑 PIN: `{r['pin']}`\n💳 Payout: {method_label} → `{r['account']}`",
+            parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data=f"wd_view_{rid}")]]))
 
     elif d.startswith("wd_approve_") and is_admin(u.id):
         rid = d.replace("wd_approve_", "")
@@ -490,22 +380,9 @@ async def button_handler(update: Update, ctx):
         method_label = PAYOUT_METHODS.get(r["method"], r["method"])
         new_bal = db_get_user(r["user_id"])["balance"]
         try:
-            await ctx.bot.send_message(
-                r["user_id"],
-                f"✅ *Withdrawal Approved*\n\n"
-                f"🆔 `{rid}`\n💰 `${r['amount']:,.2f}`\n"
-                f"💳 Sent to: {method_label} → `{r['account']}`\n"
-                f"💵 New balance: `${new_bal:,.2f}`",
-                parse_mode="Markdown")
-        except Exception:
-            pass
-        await q.edit_message_text(
-            f"✅ Withdrawal #{rid} approved.\n"
-            f"💳 Payout: {method_label} → `{r['account']}`\n"
-            f"💵 New balance: `${new_bal:,.2f}`",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")]]))
+            await ctx.bot.send_message(r["user_id"], f"✅ *Withdrawal Approved*\n\n🆔 `{rid}`\n💰 `${r['amount']:,.2f}`\n💳 {method_label} → `{r['account']}`\n💵 New balance: `${new_bal:,.2f}`", parse_mode="Markdown")
+        except Exception: pass
+        await q.edit_message_text(f"✅ Withdrawal #{rid} approved.\n💳 {method_label} → `{r['💵account']}`\n New balance: `${new_bal:,.2f}`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")]]))
 
     elif d.startswith("wd_reject_") and is_admin(u.id):
         rid = d.replace("wd_reject_", "")
@@ -514,246 +391,152 @@ async def button_handler(update: Update, ctx):
             await q.edit_message_text("❌ Already processed.", reply_markup=admin_menu()); return
         db_close_withdrawal(rid, "rejected")
         try:
-            await ctx.bot.send_message(
-                r["user_id"],
-                f"❌ *Withdrawal Rejected*\n\n"
-                f"🆔 `{rid}`\n💰 `${r['amount']:,.2f}`\n"
-                f"Contact the admin for details.",
-                parse_mode="Markdown")
-        except Exception:
-            pass
-        await q.edit_message_text(
-            f"❌ Withdrawal #{rid} rejected.",
-            reply_markup=InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")]]))
+            await ctx.bot.send_message(r["user_id"], f"❌ *Withdrawal Rejected*\n\n🆔 `{rid}`\n💰 `${r['amount']:,.2f}`\nContact admin for details.", parse_mode="Markdown")
+        except Exception: pass
+        await q.edit_message_text(f"❌ Withdrawal #{rid} rejected.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")]]))
 
-    elif d in ("admin_set", "admin_add", "admin_remove") and is_admin(u.id):
+    # Admin Add / Remove / Rate
+    elif d in ("admin_add", "admin_remove", "admin_rate") and is_admin(u.id):
         ctx.user_data["admin_action"] = d
-        await q.edit_message_text("👤 Enter the *user ID* to modify:\n_(Or /cancel)_",
-                                  parse_mode="Markdown")
+        action_name = "add earnings" if d == "admin_add" else "remove funds" if d == "admin_remove" else "edit earning rate"
+        await q.edit_message_text(f"👤 Enter the *User ID* to {action_name}:\n_(Or /cancel)_", parse_mode="Markdown")
         return W_ADMIN_UID
 
-
-# ==================== WITHDRAWAL CONVERSATION ====================
+# ==================== CONVERSATIONS ====================
 async def wd_amount(update: Update, ctx):
     txt = update.message.text.strip()
     if txt == "/cancel":
-        await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id))
-        return ConversationHandler.END
-    try:
-        amount = float(txt)
+        await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
+    try: amount = float(txt)
     except ValueError:
-        await update.message.reply_text("❌ Invalid amount. Send a number or /cancel.")
-        return W_WD_AMOUNT
+        await update.message.reply_text("❌ Invalid amount. Send a number or /cancel."); return W_WD_AMOUNT
     if amount <= 0:
-        await update.message.reply_text("❌ Amount must be greater than 0.")
-        return W_WD_AMOUNT
+        await update.message.reply_text("❌ Amount must be greater than 0."); return W_WD_AMOUNT
     usr = db_get_user(update.effective_user.id, update.effective_user.first_name)
     if amount > usr["balance"]:
-        await update.message.reply_text(
-            f"❌ *Insufficient balance.*\nRequested: `${amount:,.2f}`\n"
-            f"Available: `${usr['balance']:,.2f}`",
-            parse_mode="Markdown")
-        return W_WD_AMOUNT
-
+        await update.message.reply_text(f"❌ *Insufficient balance.*\nRequested: `${amount:,.2f}`\nAvailable: `${usr['balance']:,.2f}`", parse_mode="Markdown"); return W_WD_AMOUNT
     ctx.user_data["wd_amount"] = amount
-    await update.message.reply_text(
-        f"💸 *Withdraw — Step 2 of 3*\n\n"
-        f"💰 Amount: `${amount:,.2f}`\n\n"
-        f"💳 *Choose your payout method:*",
-        parse_mode="Markdown", reply_markup=method_choose_kb())
+    await update.message.reply_text(f"💸 *Withdraw*\n\n💰 Amount: `${amount:,.2f}`\n\n💳 *Choose your payout method:*", parse_mode="Markdown", reply_markup=method_choose_kb())
     return ConversationHandler.END
-
 
 async def wd_account(update: Update, ctx):
     txt = update.message.text.strip()
     if txt == "/cancel":
-        await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id))
-        return ConversationHandler.END
+        await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
     if len(txt) < 3:
-        await update.message.reply_text("❌ Account details too short. Try again or /cancel.")
-        return W_WD_ACCOUNT
-
-    method = ctx.user_data.get("wd_method")
-    amount = ctx.user_data.get("wd_amount")
-    uid = update.effective_user.id
-    name = update.effective_user.first_name
+        await update.message.reply_text("❌ Account details too short."); return W_WD_ACCOUNT
+    method, amount, uid = ctx.user_data.get("wd_method"), ctx.user_data.get("wd_amount"), update.effective_user.id
     if not method or not amount:
-        await update.message.reply_text("❌ Session expired. Tap 💸 Withdraw again.",
-                                        reply_markup=main_menu(uid))
-        return ConversationHandler.END
-
+        await update.message.reply_text("❌ Session expired. Tap 💸 Withdraw again.", reply_markup=main_menu(uid)); return ConversationHandler.END
     rid = db_create_withdrawal(uid, amount, method, txt)
     method_label = PAYOUT_METHODS[method]
-
     for aid in ADMIN_IDS:
-        try:
-            await ctx.bot.send_message(
-                aid,
-                f"📥 *New Withdrawal Request*\n"
-                f"🆔 `{rid}`\n"
-                f"👤 {name} (`{uid}`)\n"
-                f"💰 `${amount:,.2f}`\n"
-                f"💳 {method_label}\n"
-                f"🏦 `{txt}`\n\n"
-                f"Open *Admin Panel → Withdrawal Requests* to review.",
-                parse_mode="Markdown")
-        except Exception:
-            pass
-
-    await update.message.reply_text(
-        f"✅ *Withdrawal request submitted!*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🆔 Request: `{rid}`\n"
-        f"💰 Amount: `${amount:,.2f}`\n"
-        f"💳 Payout: {method_label}\n"
-        f"🏦 Account: `{txt}`\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"⏳ Waiting for admin to issue a PIN.\n"
-        f"Then tap *🔑 Enter PIN* on the menu.",
-        parse_mode="Markdown", reply_markup=main_menu(uid))
+        try: await ctx.bot.send_message(aid, f"📥 *New Withdrawal Request*\n🆔 `{rid}`\n👤 {update.effective_user.first_name} (`{uid}`)\n💰 `${amount:,.2f}`\n💳 {method_label}\n🏦 `{txt}`\n\nOpen *Admin Panel* to review.", parse_mode="Markdown")
+        except: pass
+    await update.message.reply_text(f"✅ *Withdrawal Request Submitted!*\n\n🆔 Request: `{rid}`\n💰 Amount: `${amount:,.2f}`\n💳 Payout: {method_label}\n🏦 Account: `{txt}`\n\n⏳ Waiting for admin to issue a PIN.", parse_mode="Markdown", reply_markup=main_menu(uid))
     return ConversationHandler.END
-
 
 async def wd_pin(update: Update, ctx):
     txt = update.message.text.strip()
     if txt == "/cancel":
-        await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id))
-        return ConversationHandler.END
-
+        await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
     r = db_pending_for_user(update.effective_user.id)
     if not r:
-        await update.message.reply_text("❌ No pending withdrawal found.",
-                                        reply_markup=main_menu(update.effective_user.id))
-        return ConversationHandler.END
+        await update.message.reply_text("❌ No pending withdrawal.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
     if not r["pin"]:
-        await update.message.reply_text("⏳ Admin has not issued a PIN yet. Try again later.")
-        return W_WD_PIN
+        await update.message.reply_text("⏳ Admin has not issued a PIN yet."); return W_WD_PIN
     if txt != r["pin"]:
-        await update.message.reply_text("❌ Incorrect PIN. Try again or /cancel.")
-        return W_WD_PIN
-
+        await update.message.reply_text("❌ Incorrect PIN. Try again or /cancel."); return W_WD_PIN
     usr = db_get_user(r["user_id"])
     if usr["balance"] < r["amount"]:
         db_close_withdrawal(r["req_id"], "rejected")
-        await update.message.reply_text("❌ Insufficient balance. Request cancelled.",
-                                        reply_markup=main_menu(update.effective_user.id))
-        return ConversationHandler.END
-
+        await update.message.reply_text("❌ Insufficient balance. Request cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
     db_adj_balance(r["user_id"], -r["amount"])
-    db_close_withdrawal(r["req_id"], "completed")
+    db_close_withdrawal(r_label["req_id"], "completed")
     db_add_payout(r["user_id"], r["method"], r["amount"], r["account"])
-    method_label = PAYOUT_METHODS.get(r["method"], r["method"])
+    method = PAYOUT_METHODS.get(r["method"], r["method"])
     new_bal = db_get_user(r["user_id"])["balance"]
-
-    await update.message.reply_text(
-        f"✅ *Withdrawal Complete!*\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"🆔 Request: `{r['req_id']}`\n"
-        f"💸 Withdrawn: `${r['amount']:,.2f}`\n"
-        f"💳 Sent to: {method_label} → `{r['account']}`\n"
-        f"💵 New balance: `${new_bal:,.2f}`",
-        parse_mode="Markdown", reply_markup=main_menu(update.effective_user.id))
-
+    await update.message.reply_text(f"✅ *Withdrawal Complete!*\n\n🆔 Request: `{r['req_id']}`\n💸 Withdrawn: `${r['amount']:,.2f}`\n💳 Sent to: {method_label} → `{r['account']}`\n💵 New balance: `${new_bal:,.2f}`", parse_mode="Markdown", reply_markup=main_menu(update.effective_user.id))
     for aid in ADMIN_IDS:
-        try:
-            await ctx.bot.send_message(
-                aid,
-                f"✅ *Withdrawal #{r['req_id']} completed via PIN*\n"
-                f"👤 `{r['user_id']}`\n💰 `${r['amount']:,.2f}`\n"
-                f"💳 {method_label} → `{r['account']}`\n\n"
-                f"⚠️ Remember to send the payout manually.",
-                parse_mode="Markdown")
-        except Exception:
-            pass
+        try: await ctx.bot.send_message(aid, f"✅ *Withdrawal #{r['req_id']} completed via PIN*\n👤 `{r['user_id']}`\n💰 `${r['amount']:,.2f}`\n💳 {method_label} → `{r['account']}`\n\n⚠️ Send the payout manually.", parse_mode="Markdown")
+        except: pass
     return ConversationHandler.END
 
-
-# ==================== ADMIN BALANCE CONVERSATION ====================
+# --- ADMIN CONVERSATIONS ---
 async def admin_get_uid(update: Update, ctx):
-    if not is_admin(update.effective_user.id):
-        return ConversationHandler.END
+    if not is_admin(update.effective_user.id): return ConversationHandler.END
     if update.message.text.strip() == "/cancel":
-        await update.message.reply_text("❌ Cancelled.")
-        return ConversationHandler.END
-    try:
-        tid = int(update.message.text.strip())
+        await update.message.reply_text("❌ Cancelled."); return ConversationHandler.END
+    try: tid = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply_text("❌ Invalid ID. Try again or /cancel.")
-        return W_ADMIN_UID
+        await update.message.reply_text("❌ Invalid ID. Try again or /cancel."); return W_ADMIN_UID
     ctx.user_data["target_id"] = tid
     usr = db_get_user(tid)
     action = ctx.user_data["admin_action"]
-    label = {"admin_set": "set balance to", "admin_add": "add to balance",
-             "admin_remove": "remove from balance"}[action]
-    await update.message.reply_text(
-        f"👤 Target: `{tid}`\n💰 Current: `${usr['balance']:,.2f}`\n\n"
-        f"How much to *{label}*?\n_(Or /cancel)_",
-        parse_mode="Markdown")
-    return W_ADMIN_AMOUNT
-
-
-async def admin_apply(update: Update, ctx):
-    if not is_admin(update.effective_user.id):
-        return ConversationHandler.END
-    if update.message.text.strip() == "/cancel":
-        await update.message.reply_text("❌ Cancelled.")
-        return ConversationHandler.END
-    try:
-        amt = float(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("❌ Invalid amount. Try again or /cancel.")
+    if action == "admin_rate":
+        await update.message.reply_text(f"👤 Target: `{tid}`\n📈 Current Rate: `{usr['earn_rate']}%`\n\nEnter the new *Earning Rate* (e.g. `1.5`):", parse_mode="Markdown")
+        return W_ADMIN_RATE
+    else:
+        label = "add earnings to" if action == "admin_add" else "remove funds from"
+        await update.message.reply_text(f"👤 Target: `{tid}`\n💰 Current: `${usr['balance']:,.2f}`\n\nHow much to *{label}* this user?", parse_mode="Markdown")
         return W_ADMIN_AMOUNT
-    tid = ctx.user_data["target_id"]
-    action = ctx.user_data["admin_action"]
+
+async def admin_apply_amount(update: Update, ctx):
+    if not is_admin(update.effective_user.id): return ConversationHandler.END
+    if update.message.text.strip() == "/cancel":
+        await update.message.reply_text("❌ Cancelled."); return ConversationHandler.END
+    try: amt = float(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ Invalid amount. Try again."); return W_ADMIN_AMOUNT
+    tid, action = ctx.user_data["target_id"], ctx.user_data["admin_action"]
     usr = db_get_user(tid)
     old = usr["balance"]
-    if action == "admin_set":
-        new = amt
-    elif action == "admin_add":
-        new = old + amt
-    else:
-        new = old - amt
-    db_set_balance(tid, new)
-    await update.message.reply_text(
-        f"✅ *Balance Updated*\n👤 `{tid}`\n"
-        f"📉 Old: `${old:,.2f}`\n📈 New: `${new:,.2f}`\n"
-        f"🔄 Change: `${new - old:+,.2f}`",
-        parse_mode="Markdown", reply_markup=admin_menu())
-    try:
-        await ctx.bot.send_message(tid,
-            f"🔔 *Balance Update*\nYour new balance is `${new:,.2f}`.",
-            parse_mode="Markdown")
-    except Exception:
-        pass
+    new = old + amt if action == "admin_add" else old - amt
+    db_adj_balance(tid, amt if action == "admin_add" else -amt)
+    await update.message.reply_text(f"✅ *Balance Updated*\n👤 `{tid}`\n📉 Old: `${old:,.2f}`\n📈 New: `${new:,.2f}`", parse_mode="Markdown", reply_markup=admin_menu())
+    try: await ctx.bot.send_message(tid, f"🔔 *Earnings Update*\nYour new balance is `${new:,.2f}`.", parse_mode="Markdown")
+    except: pass
     return ConversationHandler.END
 
+async def admin_apply_rate(update: Update, ctx):
+    if not is_admin(update.effective_user.id): return ConversationHandler.END
+    if update.message.text.strip() == "/cancel":
+        await update.message.reply_text("❌ Cancelled."); return ConversationHandler.END
+    try: rate = float(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("❌ Invalid rate. Send a number."); return W_ADMIN_RATE
+    tid = ctx.user_data["target_id"]
+    db_set_rate(tid, rate)
+    await update.message.reply_text(f"✅ *Rate Updated*\n👤 `{tid}`\n📈 New Earning Rate: `{rate}%`", parse_mode="Markdown", reply_markup=admin_menu())
+    try: await ctx.bot.send_message(tid, f"🔔 *Rate Update*\nYour earning rate has been updated to `{rate}%`.", parse_mode="Markdown")
+    except: pass
+    return ConversationHandler.END
 
 async def cancel(update: Update, ctx):
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
-
 # ==================== MAIN ====================
 def main():
-    db_init()  # create tables if missing
+    db_init()
     app = Application.builder().token(BOT_TOKEN).build()
 
     wd_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern="^(withdraw|enter_pin)$")],
         states={
-            W_WD_AMOUNT:  [MessageHandler(filters.TEXT & ~filters.COMMAND, wd_amount)],
+            W_WD_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, wd_amount)],
             W_WD_ACCOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, wd_account)],
-            W_WD_PIN:     [MessageHandler(filters.TEXT & ~filters.COMMAND, wd_pin)],
+            W_WD_PIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, wd_pin)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
     admin_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(button_handler, pattern="^admin_(set|add|remove)$")],
+        entry_points=[CallbackQueryHandler(button_handler, pattern="^admin_(add|remove|rate)$")],
         states={
-            W_ADMIN_UID:    [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_get_uid)],
-            W_ADMIN_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_apply)],
+            W_ADMIN_UID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_get_uid)],
+            W_ADMIN_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_apply_amount)],
+            W_ADMIN_RATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_apply_rate)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -763,9 +546,8 @@ def main():
     app.add_handler(admin_conv)
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    print("✅ Bot is running...")
+    print("✅ Professional Earnings Bot is running...")
     app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-
 
 if __name__ == "__main__":
     main()
