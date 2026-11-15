@@ -262,16 +262,16 @@ async def button_handler(update: Update, ctx):
             await q.edit_message_text("❌ You have no pending withdrawal.", parse_mode="Markdown", reply_markup=main_menu(u.id))
             return
         await q.edit_message_text(
-f"🔑 *Enter Withdrawal PIN*\n\n"
-f"🆔 Request: `{r['req_id']}`\n💰 Amount: `${r['amount']:,.2f}`\n"
-f"💳 Payout: {PAYOUT_METHODS.get(r['method'])} → `{r['account']}`\n\n"
-f"Send the 6-digit PIN from the admin.\n_(Or /cancel)_",
-parse_mode="Markdown")
-return W_WD_PIN
+            f"🔑 *Enter Withdrawal PIN*\n\n"
+            f"🆔 Request: `{r['req_id']}`\n💰 Amount: `${r['amount']:,.2f}`\n"
+            f"💳 Payout: {PAYOUT_METHODS.get(r['method'])} → `{r['account']}`\n\n"
+            f"Send the 6-digit PIN from the admin.\n_(Or /cancel)_",
+            parse_mode="Markdown")
+        return W_WD_PIN
 
     elif d.startswith("pm_"):
         if d == "pm_cancel":
-            await q.edit_message_text("❌ With awaitdrawal cancelled.", reply_markup=main_menu(u.id))
+            await q.edit_message_text("❌ Withdrawal cancelled.", reply_markup=main_menu(u.id))
             return ConversationHandler.END
         method = d.replace("pm_", "")
         ctx.user_data["wd_method"] = method
@@ -312,7 +312,8 @@ return W_WD_PIN
         for r in pending:
             m = PAYOUT_METHODS.get(r["method"], r["method"]).split(" ", 1)[-1]
             rows.append([InlineKeyboardButton(f"#{r['req_id']} — {m} — ${r['amount']:,.2f}", callback_data=f"wd_view_{r['req_id']}")])
-        rows.append([InlineKeyboardButton("⬅️ Back", callback_data=" q.edit_message_text(f"📥 *Pending Withdrawals* ({len(pending)})\nTap one to review:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
+        rows.append([InlineKeyboardButton("⬅️ Back", callback_data="admin")])
+        await q.edit_message_text(f"📥 *Pending Withdrawals* ({len(pending)})\nTap one to review:", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(rows))
 
     elif d.startswith("wd_view_") and is_admin(u.id):
         rid = d.replace("wd_view_", "")
@@ -381,7 +382,7 @@ return W_WD_PIN
         try:
             await ctx.bot.send_message(r["user_id"], f"✅ *Withdrawal Approved*\n\n🆔 `{rid}`\n💰 `${r['amount']:,.2f}`\n💳 {method_label} → `{r['account']}`\n💵 New balance: `${new_bal:,.2f}`", parse_mode="Markdown")
         except Exception: pass
-        await q.edit_message_text(f"✅ Withdrawal #{rid} approved.\n💳 {method_label} → `{r['💵account']}`\n New balance: `${new_bal:,.2f}`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")]]))
+        await q.edit_message_text(f"✅ Withdrawal #{rid} approved.\n💳 {method_label} → `{r['account']}`\n💵 New balance: `${new_bal:,.2f}`", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")]]))
 
     elif d.startswith("wd_reject_") and is_admin(u.id):
         rid = d.replace("wd_reject_", "")
@@ -394,7 +395,6 @@ return W_WD_PIN
         except Exception: pass
         await q.edit_message_text(f"❌ Withdrawal #{rid} rejected.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="admin_wd")]]))
 
-    # Admin Add / Remove / Rate
     elif d in ("admin_add", "admin_remove", "admin_rate") and is_admin(u.id):
         ctx.user_data["admin_action"] = d
         action_name = "add earnings" if d == "admin_add" else "remove funds" if d == "admin_remove" else "edit earning rate"
@@ -451,9 +451,9 @@ async def wd_pin(update: Update, ctx):
         db_close_withdrawal(r["req_id"], "rejected")
         await update.message.reply_text("❌ Insufficient balance. Request cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
     db_adj_balance(r["user_id"], -r["amount"])
-    db_close_withdrawal(r_label["req_id"], "completed")
+    db_close_withdrawal(r["req_id"], "completed")
     db_add_payout(r["user_id"], r["method"], r["amount"], r["account"])
-    method = PAYOUT_METHODS.get(r["method"], r["method"])
+    method_label = PAYOUT_METHODS.get(r["method"], r["method"])
     new_bal = db_get_user(r["user_id"])["balance"]
     await update.message.reply_text(f"✅ *Withdrawal Complete!*\n\n🆔 Request: `{r['req_id']}`\n💸 Withdrawn: `${r['amount']:,.2f}`\n💳 Sent to: {method_label} → `{r['account']}`\n💵 New balance: `${new_bal:,.2f}`", parse_mode="Markdown", reply_markup=main_menu(update.effective_user.id))
     for aid in ADMIN_IDS:
@@ -461,7 +461,6 @@ async def wd_pin(update: Update, ctx):
         except: pass
     return ConversationHandler.END
 
-# --- ADMIN CONVERSATIONS ---
 async def admin_get_uid(update: Update, ctx):
     if not is_admin(update.effective_user.id): return ConversationHandler.END
     if update.message.text.strip() == "/cancel":
