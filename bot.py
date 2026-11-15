@@ -262,12 +262,12 @@ async def button_handler(update: Update, ctx):
             await q.edit_message_text("❌ You have no pending withdrawal.", parse_mode="Markdown", reply_markup=main_menu(u.id))
             return
         await q.edit_message_text(
-            f"🔑 *Enter Withdrawal PIN*\n\n"
-            f"🆔 Request: `{r['reqadmin_id']}`\n💰 Amount: `${r['amount']:,.2f}`\n"
-            f"💳 Payout: {PA")YOUT_METHODS.get(r['method'])} → `{r['account']}`\n\n"
+f"🔑 *Enter Withdrawal PIN*\n\n"
+f"🆔 Request: `{r['req_id']}`\n💰 Amount: `${r['amount']:,.2f}`\n"
+f"💳 Payout: {PAYOUT_METHODS.get(r['method'])} → `{r['account']}`\n\n"
 f"Send the 6-digit PIN from the admin.\n_(Or /cancel)_",
-            parse_mode="Markdown")
-        return W_WD_P       IN
+parse_mode="Markdown")
+return W_WD_PIN
 
     elif d.startswith("pm_"):
         if d == "pm_cancel":
