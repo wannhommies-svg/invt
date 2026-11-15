@@ -10,8 +10,8 @@ from telegram.ext import (
 )
 
 # ==================== CONFIG ====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "9197063102:AAExhD-kvU0DcJiVgy3_RlvLAW93pzgaLLc")
-ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "8780518351").split(",")]
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "123456789").split(",")]
 DB_PATH = os.environ.get("DB_PATH", "data.db")
 
 # States
