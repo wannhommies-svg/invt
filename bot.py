@@ -447,8 +447,16 @@ async def wd_account(update: Update, ctx):
     for aid in ADMIN_IDS:
         try: await ctx.bot.send_message(aid, f"📥 *New Withdrawal Request*\n🆔 `{rid}`\n👤 {update.effective_user.first_name} (`{uid}`)\n💰 `${amount:,.2f}`\n💳 {method_label}\n🏦 `{txt}`\n\nOpen *Admin Panel* to review.", parse_mode="Markdown")
         except: pass
-    await update.message.reply_text(f"✅ *Withdrawal Request Submitted!*\n\n🆔 Request: `{rid}`\n💰 Amount: `${amount:,.2f["}`\n💳 Payout: {method_label}\n🏦 Account: `{txt}`\n\n⏳ Waiting for admin to issue a PIN.",req parse_mode="Markdown", reply_markup=main_menu(uid))
-    return ConversationHandler.END
+   await update.message.reply_text(
+f"✅ *Withdrawal Request Submitted!*\n\n"
+f"🆔 Request: `{rid}`\n"
+f"💰 Amount: `${amount:,.2f}`\n"
+f"💳 Payout: {method_label}\n"
+f"🏦 Account: `{txt}`\n\n"
+f"⏳ Waiting for admin to issue a PIN.",
+parse_mode="Markdown", 
+reply_markup=main_menu(uid)
+)
 
 async def wd_pin(_idupdate: Update, ctx):
     txt = update.message.text.strip()
