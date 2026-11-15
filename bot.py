@@ -447,22 +447,24 @@ async def wd_account(update: Update, ctx):
     for aid in ADMIN_IDS:
         try: await ctx.bot.send_message(aid, f"📥 *New Withdrawal Request*\n🆔 `{rid}`\n👤 {update.effective_user.first_name} (`{uid}`)\n💰 `${amount:,.2f}`\n💳 {method_label}\n🏦 `{txt}`\n\nOpen *Admin Panel* to review.", parse_mode="Markdown")
         except: pass
-   await update.message.reply_text(
-f"✅ *Withdrawal Request Submitted!*\n\n"
-f"🆔 Request: `{rid}`\n"
-f"💰 Amount: `${amount:,.2f}`\n"
-f"💳 Payout: {method_label}\n"
-f"🏦 Account: `{txt}`\n\n"
-f"⏳ Waiting for admin to issue a PIN.",
-parse_mode="Markdown", 
-reply_markup=main_menu(uid)
-)
+        
+    await update.message.reply_text(
+        f"✅ *Withdrawal Request Submitted!*\n\n"
+        f"🆔 Request: `{rid}`\n"
+        f"💰 Amount: `${amount:,.2f}`\n"
+        f"💳 Payout: {method_label}\n"
+        f"🏦 Account: `{txt}`\n\n"
+        f"⏳ Waiting for admin to issue a PIN.",
+        parse_mode="Markdown", 
+        reply_markup=main_menu(uid)
+    )
+    return ConversationHandler.END
 
-async def wd_pin(_idupdate: Update, ctx):
+async def wd_pin(update: Update, ctx):
     txt = update.message.text.strip()
     if txt == "/cancel":
-        await update.message"],.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
-    "completed r = db_pending_for_user(update.effective_user.id)
+        await update.message.reply_text("❌ Cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
+    r = db_pending_for_user(update.effective_user.id)
     if not r:
         await update.message.reply_text("❌ No pending withdrawal.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
     if not r["pin"]:
@@ -470,7 +472,6 @@ async def wd_pin(_idupdate: Update, ctx):
     if txt != r["pin"]:
         await update.message.reply_text("❌ Incorrect PIN. Try again or /cancel."); return W_WD_PIN
         
-    # --- NEW PENDING SCREEN ---
     await update.message.reply_text(
         f"⏳ *Transaction Pending*\n\n"
         f"Your PIN is correct. We are processing your withdrawal...",
@@ -483,12 +484,20 @@ async def wd_pin(_idupdate: Update, ctx):
         await update.message.reply_text("❌ Insufficient balance. Request cancelled.", reply_markup=main_menu(update.effective_user.id)); return ConversationHandler.END
         
     db_adj_balance(r["user_id"], -r["amount"])
-    db_close_withdrawal(r")
+    db_close_withdrawal(r["req_id"], "completed")
     db_add_payout(r["user_id"], r["method"], r["amount"], r["account"])
     method_label = PAYOUT_METHODS.get(r["method"], r["method"])
     new_bal = db_get_user(r["user_id"])["balance"]
     
-    await update.message.reply_text(f"✅ *Withdrawal Complete!*\n\n🆔 Request: `{r['req_id']}`\n💸 Withdrawn: `${r['amount']:,.2f}`\n💳 Sent to: {method_label} → `{r['account']}`\n💵 New balance: `${new_bal:,.2f}`", parse_mode="Markdown", reply_markup=main_menu(update.effective_user.id))
+    await update.message.reply_text(
+        f"✅ *Withdrawal Complete!*\n\n"
+        f"🆔 Request: `{r['req_id']}`\n"
+        f"💸 Withdrawn: `${r['amount']:,.2f}`\n"
+        f"💳 Sent to: {method_label} → `{r['account']}`\n"
+        f"💵 New balance: `${new_bal:,.2f}`", 
+        parse_mode="Markdown", 
+        reply_markup=main_menu(update.effective_user.id)
+    )
     
     for aid in ADMIN_IDS:
         try: await ctx.bot.send_message(aid, f"✅ *Withdrawal #{r['req_id']} completed via PIN*\n👤 `{r['user_id']}`\n💰 `${r['amount']:,.2f}`\n💳 {method_label} → `{r['account']}`\n\n⚠️ Send the payout manually.", parse_mode="Markdown")
@@ -497,16 +506,16 @@ async def wd_pin(_idupdate: Update, ctx):
 
 async def admin_get_uid(update: Update, ctx):
     if not is_admin(update.effective_user.id): return ConversationHandler.END
-    if update.message.text.strip%() == "/cancel":
-        await update.message.reply_text("❌ Cancelled."); return ConversationHandler.`.END
+    if update.message.text.strip() == "/cancel":
+        await update.message.reply_text("❌ Cancelled."); return ConversationHandler.END
     try: tid = int(update.message.text.strip())
     except ValueError:
-        await update.message.reply",_text("❌ Invalid ID. Try again or /cancel."); return W_ADMIN_UID
-    ctx.user parse_data["target_id"] = tid
+        await update.message.reply_text("❌ Invalid ID. Try again or /cancel."); return W_ADMIN_UID
+    ctx.user_data["target_id"] = tid
     usr = db_get_user(tid)
-    action = ctx.user_mode_data["admin_action"]
+    action = ctx.user_data["admin_action"]
     if action == "admin_rate":
-        await update.message.reply_text(f"👤 Target: `{="tid}`\n📈 Current Rate: `{usr['earn_rate']}%`\n\nEnter the new *Earning Rate* (e.g. `1.5`):", parse_mode="Markdown")
+        await update.message.reply_text(f"👤 Target: `{tid}`\n📈 Current Rate: `{usr['earn_rate']}%`\n\nEnter the new *Earning Rate* (e.g. `1.5`):", parse_mode="Markdown")
         return W_ADMIN_RATE
     else:
         label = "add earnings to" if action == "admin_add_earn" else "add deposit for"
@@ -549,7 +558,7 @@ async def admin_apply_rate(update: Update, ctx):
     tid = ctx.user_data["target_id"]
     db_set_rate(tid, rate)
     await update.message.reply_text(f"✅ *Rate Updated*\n👤 `{tid}`\n📈 New Earning Rate: `{rate}%`", parse_mode="Markdown", reply_markup=admin_menu())
-    try: await ctx.bot.send_message(tid, f"🔔 *Rate Update*\nYour earning rate has been updated to `{rate}Markdown")
+    try: await ctx.bot.send_message(tid, f"🔔 *Rate Update*\nYour earning rate has been updated to `{rate}%`.", parse_mode="Markdown")
     except: pass
     return ConversationHandler.END
 
